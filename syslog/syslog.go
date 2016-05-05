@@ -97,30 +97,32 @@ type Logger struct {
 	Errors         chan error
 	ClientHostname string
 
-	network        string
-	raddr          string
-	rootCAs        *x509.CertPool
-	connectTimeout time.Duration
-	writeTimeout   time.Duration
+	network          string
+	raddr            string
+	rootCAs          *x509.CertPool
+	connectTimeout   time.Duration
+	writeTimeout     time.Duration
+	tcpMaxLineLength int
 	log            *loggo.Logger
 }
 
 // Dial connects to the syslog server at raddr, using the optional certBundle,
 // and launches a goroutine to watch logger.Packets for messages to log.
-func Dial(clientHostname, network, raddr string, rootCAs *x509.CertPool, connectTimeout time.Duration, writeTimeout time.Duration, log *loggo.Logger) (*Logger, error) {
+func Dial(clientHostname, network, raddr string, rootCAs *x509.CertPool, connectTimeout time.Duration, writeTimeout time.Duration, tcpMaxLineLength int, log *loggo.Logger) (*Logger, error) {
 	// dial once, just to make sure the network is working
 	conn, err := dial(network, raddr, rootCAs, connectTimeout, log)
 
 	logger := &Logger{
-		ClientHostname: clientHostname,
-		network:        network,
-		raddr:          raddr,
-		rootCAs:        rootCAs,
-		Packets:        make(chan Packet, 100),
-		Errors:         make(chan error, 0),
-		connectTimeout: connectTimeout,
-		writeTimeout:   writeTimeout,
-		conn:           conn,
+		ClientHostname:   clientHostname,
+		network:          network,
+		raddr:            raddr,
+		rootCAs:          rootCAs,
+		Packets:          make(chan Packet, 100),
+		Errors:           make(chan error, 0),
+		connectTimeout:   connectTimeout,
+		writeTimeout:     writeTimeout,
+		conn:             conn,
+		tcpMaxLineLength: tcpMaxLineLength,
 		log:            log,
 	}
 	go logger.writeLoop()
@@ -168,7 +170,7 @@ func (l *Logger) writePacket(p Packet) {
 		switch l.conn.netConn.(type) {
 		case *net.TCPConn, *tls.Conn:
 			l.conn.netConn.SetWriteDeadline(deadline)
-			_, err = io.WriteString(l.conn.netConn, p.Generate(0)+"\n")
+			_, err = io.WriteString(l.conn.netConn, p.Generate(l.tcpMaxLineLength)+"\n")
 		case *net.UDPConn:
 			l.conn.netConn.SetWriteDeadline(deadline)
 			_, err = io.WriteString(l.conn.netConn, p.Generate(1024))
@@ -179,6 +181,8 @@ func (l *Logger) writePacket(p Packet) {
 			return
 		} else {
 			l.log.Errorf("**Failed to write using connection: %d. Forcing connection reset after timeout", l.conn.connectionId)
+			// We had an error -- we need to close the connection and try again
+			l.conn.netConn.Close()
 			l.handleError(err)
 			l.conn.forceReset = true // Write failed - force reset connection.
 			// Do a more aggressive connection reset because the remote server seems to

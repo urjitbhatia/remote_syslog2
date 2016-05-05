@@ -60,7 +60,7 @@ Configuration directives can also be specified as command-line arguments (below)
       -c, --configfile="/etc/log_files.yml": Path to config
           --debug-log-cfg="": the debug log file
       -d, --dest-host="": Destination syslog hostname or IP
-      -p, --dest-port=514: Destination syslog port
+      -p, --dest-port=0: Destination syslog port
           --eventmachine-tail=false: No action, provided for backwards compatibility
       -f, --facility="user": Facility
           --hostname="": Local hostname to send from
@@ -69,8 +69,10 @@ Configuration directives can also be specified as command-line arguments (below)
       -D, --no-detach=false: Don't daemonize and detach from the terminal
           --no-eventmachine-tail=false: No action, provided for backwards compatibility
           --pid-file="": Location of the PID file
+          --poll=false: Detect changes by polling instead of inotify
       -s, --severity="notice": Severity
           --tcp=false: Connect via TCP (no TLS)
+          --tcp-max-line-length=0: Maximum TCP line length
           --tls=false: Connect via TCP with TLS
 
 
@@ -239,17 +241,35 @@ remote_syslog uses the log file name (like "access_log") as the syslog
 program name, or what the syslog RFCs call the "tag." This is ideal unless
 remote_syslog watches many files that have the same name.
 
-In that case, tell remote_syslog to set another program name by creating
-symbolic link to the generically-named file:
+In that case, tell remote_syslog to set another program name using the
+`tag` attribute in the configuration file:
+```
+files: 
+  - path: /var/log/httpd/access_log
+    tag: apache
+destination:
+  host: logs.papertrailapp.com
+  port: 12345
+  protocol: tls
+```
+... or on the command line:
+`remote_syslog apache=/var/log/httpd/access_log`
 
-    cd /path/to/logs
-    ln -s generic_name.log unique_name.log
-
-Point `remote_syslog` at `unique_name.log`. `remote_syslog` will send its
-contents with the program name `unique_name.log`.
-
+This functionality was introduced in version 0.17
 
 ## Troubleshooting
+
+### Generate debug log
+
+To output debugging events with maximum verbosity, run:
+
+```
+remote_syslog --debug-log-cfg=logfile.txt --log="<root>=DEBUG"
+```
+
+.. as well as any other arguments which are used in normal operation. This 
+will set [loggo](https://github.com/juju/loggo#func-parseconfigurationstring)'s
+root logger to the `DEBUG` level and output to `logfile.txt`.
 
 ### Truncated messages
 

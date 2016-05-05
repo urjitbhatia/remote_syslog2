@@ -11,17 +11,26 @@ import (
 	"launchpad.net/goyaml"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"strings"
 	"time"
 )
+
+var Version string
 
 const (
 	MinimumRefreshInterval = (time.Duration(10) * time.Second)
 	DefaultConfigFile      = "/etc/log_files.yml"
 )
 
+type LogFile struct {
+	Path string
+	Tag  string
+}
+
 type ConfigFile struct {
-	Files       []string
+	Files       []interface{}
 	Destination struct {
 		Host     string `yaml:"host"`
 		Port     int    `yaml:"port"`
@@ -31,29 +40,31 @@ type ConfigFile struct {
 	ConnectTimeout int    `yaml:"connect_timeout"`
 	WriteTimeout   int    `yaml:"write_timeout"`
 	//SetYAML is only called on pointers
-	RefreshInterval *RefreshInterval `yaml:"new_file_check_interval"`
-	ExcludeFiles    *RegexCollection `yaml:"exclude_files"`
-	ExcludePatterns *RegexCollection `yaml:"exclude_patterns"`
+	RefreshInterval  *RefreshInterval `yaml:"new_file_check_interval"`
+	ExcludeFiles     *RegexCollection `yaml:"exclude_files"`
+	ExcludePatterns  *RegexCollection `yaml:"exclude_patterns"`
+	TcpMaxLineLength int              `yaml:"tcp_max_line_length"`
 }
 
 type ConfigManager struct {
 	Config    ConfigFile
-	FlagFiles []string
+	FlagFiles []LogFile
 	Flags     struct {
-		Hostname        string
-		DestHost        string
-		DestPort        int
-		ConfigFile      string
-		LogLevels       string
-		DebugLogFile    string
-		PidFile         string
-		RefreshInterval RefreshInterval
-		UseTCP          bool
-		UseTLS          bool
-		NoDaemonize     bool
-		Severity        string
-		Facility        string
-		Poll            bool
+		Hostname         string
+		DestHost         string
+		DestPort         int
+		ConfigFile       string
+		LogLevels        string
+		DebugLogFile     string
+		PidFile          string
+		RefreshInterval  RefreshInterval
+		UseTCP           bool
+		UseTLS           bool
+		NoDaemonize      bool
+		Severity         string
+		Facility         string
+		Poll             bool
+		TcpMaxLineLength int
 	}
 }
 
@@ -172,8 +183,21 @@ func (cm *ConfigManager) parseFlags() {
 	_ = pflag.Bool("eventmachine-tail", false, "No action, provided for backwards compatibility")
 	pflag.StringVar(&cm.Flags.DebugLogFile, "debug-log-cfg", "", "the debug log file")
 	pflag.StringVar(&cm.Flags.LogLevels, "log", "<root>=INFO", "set loggo config, like: --log=\"<root>=DEBUG\"")
+	pflag.IntVar(&cm.Flags.TcpMaxLineLength, "tcp-max-line-length", 0, "Maximum TCP line length")
+	version := pflag.Bool("version", false, "Print the remote_syslog2 version")
 	pflag.Parse()
-	cm.FlagFiles = pflag.Args()
+	if *version {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
+	for _, arg := range pflag.Args() {
+		log := strings.Split(arg, "=")
+		if len(log) == 2 {
+			cm.FlagFiles = append(cm.FlagFiles, LogFile{Tag: log[0], Path: log[1]})
+		} else {
+			cm.FlagFiles = append(cm.FlagFiles, LogFile{Tag: "", Path: log[0]})
+		}
+	}
 }
 
 func (cm *ConfigManager) readConfig() error {
@@ -262,6 +286,17 @@ func (cm *ConfigManager) DestProtocol() string {
 	}
 }
 
+func (cm *ConfigManager) TcpMaxLineLength() int {
+	switch {
+	case cm.Flags.TcpMaxLineLength != 0:
+		return cm.Flags.TcpMaxLineLength
+	case cm.Config.TcpMaxLineLength != 0:
+		return cm.Config.TcpMaxLineLength
+	default:
+		return 99990
+	}
+}
+
 func (cm *ConfigManager) Severity() syslog.Priority {
 	s, err := syslog.Severity(cm.Flags.Severity)
 	if err != nil {
@@ -284,8 +319,27 @@ func (cm *ConfigManager) Poll() bool {
 	return cm.Flags.Poll
 }
 
-func (cm *ConfigManager) Files() []string {
-	return append(cm.FlagFiles, cm.Config.Files...)
+func (cm *ConfigManager) Files() []LogFile {
+	logFiles := cm.FlagFiles
+	for _, file := range cm.Config.Files {
+		v := reflect.ValueOf(file)
+		switch v.Kind() {
+		case reflect.String:
+			logFiles = append(logFiles, LogFile{Tag: "", Path: v.String()})
+		case reflect.Map:
+			m := v.Interface().(map[interface{}]interface{})
+			tag := reflect.ValueOf(m["tag"])
+			path := reflect.ValueOf(m["path"])
+			if tag.Kind() == reflect.String && path.Kind() == reflect.String {
+				logFiles = append(logFiles, LogFile{Tag: tag.String(), Path: path.String()})
+				break
+			}
+			fallthrough
+		default:
+			log.Errorf("Could not parse log file configuration: %v", v)
+		}
+	}
+	return logFiles
 }
 
 func (cm *ConfigManager) DebugLogFile() string {

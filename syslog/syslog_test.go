@@ -117,7 +117,7 @@ func handle(conn io.ReadCloser, messages chan string) {
 
 func generatePackets() []Packet {
 	packets := make([]Packet, 10)
-	for i, _ := range packets {
+	for i := range packets {
 		t, _ := time.Parse(time.RFC3339, "2006-01-02T15:04:05Z07:00")
 		packets[i] = Packet{
 			Severity: SevInfo,
@@ -138,7 +138,7 @@ func TestSyslog(t *testing.T) {
 		connectTimeout := time.Duration(30) * time.Second
 		writeTimeout := connectTimeout
 		var log = loggo.GetLogger("")
-		logger, err := Dial(clienthost, network, s.Addr, nil, connectTimeout, writeTimeout, &log)
+		logger, err := Dial(clienthost, network, s.Addr, nil, connectTimeout, writeTimeout, 99990,  &log)
 		if err != nil {
 			t.Errorf("unexpected dial error %v", err)
 		}
