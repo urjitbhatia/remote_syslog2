@@ -11,10 +11,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"github.com/howbazaar/loggo"
 	"io"
 	"net"
+	"sync"
 	"time"
+
+	"github.com/howbazaar/loggo"
 )
 
 // A net.Conn with added reconnection logic
@@ -60,6 +62,10 @@ func (c *conn) reconnectNeeded(log *loggo.Logger) bool {
 	}
 }
 
+func (c *conn) Close() error {
+	return c.netConn.Close()
+}
+
 // dial connects to the server and set up a watching goroutine
 func dial(network, raddr string, rootCAs *x509.CertPool, connectTimeout time.Duration, log *loggo.Logger) (*conn, error) {
 	var netConn net.Conn
@@ -72,7 +78,8 @@ func dial(network, raddr string, rootCAs *x509.CertPool, connectTimeout time.Dur
 			config = &tls.Config{RootCAs: rootCAs}
 		}
 		dialer := &net.Dialer{
-			Timeout: connectTimeout,
+			Timeout:   connectTimeout,
+			KeepAlive: time.Second * 60 * 3, // 3 minutes
 		}
 		netConn, err = tls.DialWithDialer(dialer, "tcp", raddr, config)
 	case "udp", "tcp":
@@ -103,7 +110,10 @@ type Logger struct {
 	connectTimeout   time.Duration
 	writeTimeout     time.Duration
 	tcpMaxLineLength int
-	log            *loggo.Logger
+	log              *loggo.Logger
+	mu               sync.RWMutex
+	stopChan         chan struct{}
+	stopped          bool
 }
 
 // Dial connects to the syslog server at raddr, using the optional certBundle,
@@ -123,10 +133,41 @@ func Dial(clientHostname, network, raddr string, rootCAs *x509.CertPool, connect
 		writeTimeout:     writeTimeout,
 		conn:             conn,
 		tcpMaxLineLength: tcpMaxLineLength,
-		log:            log,
+		log:              log,
+		stopChan:         make(chan struct{}, 1),
 	}
 	go logger.writeLoop()
 	return logger, err
+}
+
+func (l *Logger) Write(packet Packet) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if l.stopped {
+		return
+	}
+
+	l.Packets <- packet
+}
+
+func (l *Logger) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if !l.stopped {
+		l.stopped = true
+		l.stopChan <- struct{}{}
+
+		err := l.conn.Close()
+		l.conn = nil
+
+		close(l.Errors)
+
+		return err
+	}
+
+	return nil
 }
 
 // Connect to the server, retrying every 10 seconds until successful.
@@ -196,7 +237,12 @@ func (l *Logger) writePacket(p Packet) {
 // writeloop writes any packets recieved on l.Packets() to the syslog server.
 func (l *Logger) writeLoop() {
 	l.log.Infof("*** READY TO SEND PACKETS ***")
-	for p := range l.Packets {
-		l.writePacket(p)
+	for {
+		select {
+		case p := <-l.Packets:
+			l.writePacket(p)
+		case <-l.stopChan:
+			return
+		}
 	}
 }

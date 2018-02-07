@@ -38,7 +38,7 @@ option or the `-d` invocation flag are required.
 
 ## Installing
 
-Precompiled binaries for Mac, Linux and Windows are available on the
+Precompiled binaries for Mac (Darwin), Linux and Windows are available on the
 [remote_syslog2 releases page][releases].
 
 Untar the package, copy the "remote_syslog" executable into your $PATH,
@@ -57,24 +57,22 @@ Configuration directives can also be specified as command-line arguments (below)
 ## Usage
 
     Usage of remote_syslog2:
-      -c, --configfile="/etc/log_files.yml": Path to config
-          --debug-log-cfg="": the debug log file
-      -d, --dest-host="": Destination syslog hostname or IP
-      -p, --dest-port=0: Destination syslog port
-          --eventmachine-tail=false: No action, provided for backwards compatibility
-      -f, --facility="user": Facility
-          --hostname="": Local hostname to send from
-          --log="<root>=INFO": set loggo config, like: --log="<root>=DEBUG"
-          --new-file-check-interval={0}: How often to check for new files
-      -D, --no-detach=false: Don't daemonize and detach from the terminal
-          --no-eventmachine-tail=false: No action, provided for backwards compatibility
-          --pid-file="": Location of the PID file
-          --poll=false: Detect changes by polling instead of inotify
-      -s, --severity="notice": Severity
-          --tcp=false: Connect via TCP (no TLS)
-          --tcp-max-line-length=0: Maximum TCP line length
-          --tls=false: Connect via TCP with TLS
-
+      -c, --configfile string             Path to config (default "/etc/log_files.yml")
+          --debug-log-cfg string          The debug log file; overridden by -D/--no-detach
+      -d, --dest-host string              Destination syslog hostname or IP
+      -p, --dest-port int                 Destination syslog port (default 514)
+          --eventmachine-tail             No action, provided for backwards compatibility
+      -f, --facility string               Facility (default "user")
+          --hostname string               Local hostname to send from (default: OS hostname)
+          --log string                    Set loggo config, like: --log="<root>=DEBUG" (default "<root>=INFO")
+          --new-file-check-interval int   How often to check for new files (seconds) (default 10)
+      -D, --no-detach                     Don't daemonize and detach from the terminal; overrides --debug-log-cfg
+          --no-eventmachine-tail          No action, provided for backwards compatibility
+          --pid-file string               Location of the PID file
+          --poll                          Detect changes by polling instead of inotify
+      -s, --severity string               Severity (default "notice")
+          --tcp                           Connect via TCP (no TLS)
+          --tls                           Connect via TCP with TLS
 
 ## Example
 
@@ -171,11 +169,16 @@ Provide `--hostname somehostname` or use the `hostname` configuration option:
 remote_syslog automatically detects and activates new log files that match
 its file specifiers. For example, `*.log` may be provided as a file specifier,
 and remote_syslog will detect a `some.log` file created after it was started.
-Globs are re-checked every 10 seconds.
 
-Note: messages may be written to files in the 0-10 seconds between when the
+By default, globs are re-checked every 10 seconds. To check for new files more
+frequently, use the `--new-file-check-interval` argument. For example, to
+recheck globs every 1 second, use:
+
+    --new-file-check-interval 1
+
+Note: messages may be written to new files in the period between when the
 file is created and when the periodic glob check detects it. This data is not
-acted on.
+transmitted.
 
 If globs are specified on the command-line, enclose each one in single-quotes
 (`'*.log'`) so the shell passes the raw glob string to remote_syslog (rather
@@ -183,7 +186,7 @@ than the current set of matches). This is not necessary for globs defined in
 the config file.
 
 
-### Log rotation
+### Log rotation and the behavior of remote_syslog
 
 External log rotation scripts often move or remove an existing log file
 and replace it with a new one (at a new inode). The Linux standard script
@@ -191,11 +194,21 @@ and replace it with a new one (at a new inode). The Linux standard script
 option.  With that option, `logrotate` will copy files, operate on the copies,
 and truncate the original so that the inode remains the same.
 
-This comes closest to ensuring that programs watching these files (including
-`remote_syslog`) will not be affected by, or need to be notified of, the
-rotation. The only tradeoff of `copytruncate` is slightly higher disk usage
-during rotation, so we recommend this option whether or not you use
-`remote_syslog`.
+`remote_syslog` will handle both approaches seamlessly, so it should be no
+concern as to which method is used. If a log file is moved or renamed, 
+and a new file is created (at a new inode), `remote_syslog` will follow that
+new file at the new inode (assuming it has the same absolute path name). If
+a file is copied then truncated, `remote_syslog` will seek to the beginning of
+the truncated file and continue to read it.
+
+#### Log rotation edge cases to be aware of
+
+Some logging programs such as Java's gclog (`-XX:+PrintGC` or `-verbose:gc`)
+do not log in append mode, so if another program such as `logrotate` (set to
+`copytruncate`) truncates the file, on the next write of the Java logger, the
+OS will fill the file with NUL bytes upto the current offset of the file descriptor.
+More info on that [here](http://stackoverflow.com/questions/8353401/garbage-collector-log-loggc-file-rotation-with-logrotate-does-not-work-properl).
+`remote_syslog` will detect those leading NUL bytes, discard them, and log the discard count.
 
 
 ### Excluding files from being sent
@@ -244,7 +257,7 @@ remote_syslog watches many files that have the same name.
 In that case, tell remote_syslog to set another program name using the
 `tag` attribute in the configuration file:
 ```
-files: 
+files:
   - path: /var/log/httpd/access_log
     tag: apache
 destination:
@@ -267,14 +280,14 @@ To output debugging events with maximum verbosity, run:
 remote_syslog --debug-log-cfg=logfile.txt --log="<root>=DEBUG"
 ```
 
-.. as well as any other arguments which are used in normal operation. This 
+.. as well as any other arguments which are used in normal operation. This
 will set [loggo](https://github.com/juju/loggo#func-parseconfigurationstring)'s
 root logger to the `DEBUG` level and output to `logfile.txt`.
 
 ### Truncated messages
 
 To send messages longer than 1024 characters, use TCP (either TLS or cleartext
-TCP) of UDP. See "[Sending messages securely](#sending-messages-securely)" to
+TCP) instead of UDP. See "[Sending messages securely](#sending-messages-securely)" to
 use TCP with TLS for messages of any length.
 
 [Here's why](http://help.papertrailapp.com/kb/configuration/troubleshooting-remote-syslog-reachability/#message-length) longer UDP messages are impossible to send over
@@ -334,26 +347,32 @@ Once again, confirm that remote_syslog starts and then apply this value permanen
 
 ## Development
 
-remote_syslog2 is written in go, and uses [godep] to manage
+remote_syslog2 is written in go, and uses [govendor] to manage
 dependencies. To get everything set up, [install go][goinstall] then
 run:
 
-    go get github.com/kr/godep
+    go get github.com/kardianos/govendor
     go get github.com/mitchellh/gox
     go get github.com/papertrail/remote_syslog2
 
 To run tests:
 
     # run all tests
-    godep go test ./...
+    go test ./...
     # run all tests except the slower syslog reconnection tests
-    godep go test -short ./...
+    go test -short ./...
 
 
 ## Building
 
     make
 
+### ARM support
+
+As of 0.18, we introduced ARM support for remote_syslog2. Current ARM builds
+support all ARM platforms with hardware floating point instruction sets. This
+includes All Raspberry PI devices, most ARMv6 chips (Cortex), and ARMv7 and
+beyond. 
 
 ## Contributing
 
@@ -371,7 +390,7 @@ Once you've made your great commits:
 [remote_syslog]: https://github.com/papertrail/remote_syslog
 [releases]: https://github.com/papertrail/remote_syslog2/releases
 
-[godep]: https://github.com/kr/godep
+[govendor]: https://github.com/kardianos/govendor
 [goinstall]: http://golang.org/doc/install
 
 [fk]: http://help.github.com/forking/
